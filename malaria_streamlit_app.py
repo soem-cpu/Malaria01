@@ -1,3 +1,67 @@
+"""Streamlit UI for Malaria SSR1.6 validation.
+Run: streamlit run malaria_streamlit_app.py
+Keep Malaria_SSR1.6_v1(1).py in the same folder.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from io import BytesIO
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+
+BASE_DIR = Path(__file__).resolve().parent
+RULE_FILE = BASE_DIR / "Malaria_SSR1.6_v1(1).py"
+TEMPLATE_FILE = BASE_DIR / "Malaria_SSR1_6_Input_Template.xlsx"
+LOCAL_PHOTO = BASE_DIR / "anopheles_mosquito.jpg"
+PHOTO_URL = "https://commons.wikimedia.org/wiki/Special:FilePath/Anopheles_minimus.jpg?width=960"
+
+st.set_page_config(page_title="Malaria SSR1.6 | Data Validation", page_icon="🦟", layout="wide")
+st.markdown("""
+<style>
+.block-container {padding-top: 1.5rem;}
+.hero-title {font-size:2rem; font-weight:750; color:#146451; margin-bottom:.3rem;}
+.hero-sub {color:#586a68; font-size:1.0rem;}
+</style>
+""", unsafe_allow_html=True)
+
+
+@st.cache_resource(show_spinner=False)
+def load_rules(rule_path: str, modified_ns: int):
+    spec = importlib.util.spec_from_file_location("malaria_ssr16_rules", rule_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Could not load malaria rules module.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def read_sheet(upload, sheet_name):
+    # Keep data as supplied, without allowing inferred numeric conversion of IDs.
+    # Native Excel dates remain as timestamps; the rules decide acceptable date formats.
+    return pd.read_excel(upload, sheet_name=sheet_name, dtype=object, engine="openpyxl")
+
+
+def select_sheet(upload, key):
+    if upload is None:
+        return None
+    xl = pd.ExcelFile(upload, engine="openpyxl")
+    return st.selectbox("Worksheet", xl.sheet_names, key=key)
+
+
+def to_excel(positive=None, aggregate=None, recheck=None):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        if positive is not None:
+            positive.to_excel(writer, sheet_name="Positive_Checked", index=False)
+        if aggregate is not None:
+            aggregate.to_excel(writer, sheet_name="Aggregate_Checked", index=False)
+        if recheck is not None:
+            rows = recheck.get("custom_rows")
             if rows:
                 wb = writer.book
                 ws = wb.create_sheet(recheck.get("sheet_title", "REACH_RECHECK")[:31])
@@ -126,3 +190,5 @@ if "result" in st.session_state:
                 if only_findings:
                     df = df[df["COMMENT"].fillna("").astype(str).str.strip().ne("")]
             st.dataframe(df, use_container_width=True, hide_index=True)
+    if recheck is not None:
+        st.info("REACH_RECHECK includes Excel formulas. Open the downloaded workbook in Excel or LibreOffice to recalculate the comparison fields.")
