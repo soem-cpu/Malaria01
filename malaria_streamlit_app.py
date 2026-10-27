@@ -1,74 +1,3 @@
-"""Streamlit UI for Malaria SSR1.6 validation.
-Run: streamlit run malaria_streamlit_app.py
-Keep Malaria_SSR1.6_v1(1).py in the same folder.
-"""
-
-from __future__ import annotations
-
-import importlib.util
-from io import BytesIO
-from pathlib import Path
-
-import pandas as pd
-import streamlit as st
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-
-BASE_DIR = Path(__file__).resolve().parent
-RULE_FILE = BASE_DIR / "Malaria_SSR1.6_v1(1).py"
-TEMPLATE_FILE = BASE_DIR / "Malaria_SSR1_6_Input_Template.xlsx"
-LOCAL_PHOTO = BASE_DIR / "anopheles_mosquito.jpg"
-PHOTO_URL = "https://commons.wikimedia.org/wiki/Special:FilePath/Anopheles_minimus.jpg?width=960"
-
-st.set_page_config(page_title="Malaria SSR1.6 | Data Validation", page_icon="🦟", layout="wide")
-st.markdown("""
-<style>
-.block-container {padding-top: 1.5rem;}
-.hero-title {font-size:2rem; font-weight:750; color:#146451; margin-bottom:.3rem;}
-.hero-sub {color:#586a68; font-size:1.0rem;}
-</style>
-""", unsafe_allow_html=True)
-
-
-@st.cache_resource(show_spinner=False)
-def load_rules(rule_path: str, modified_ns: int):
-    spec = importlib.util.spec_from_file_location("malaria_ssr16_rules", rule_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Could not load malaria rules module.")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def read_sheet(upload, sheet_name):
-    # Keep data as supplied, without allowing inferred numeric conversion of IDs.
-    # Native Excel dates remain as timestamps; the rules decide acceptable date formats.
-    return pd.read_excel(upload, sheet_name=sheet_name, dtype=object, engine="openpyxl")
-
-
-def select_sheet(upload, key):
-    if upload is None:
-        return None
-    xl = pd.ExcelFile(upload, engine="openpyxl")
-    return st.selectbox("Worksheet", xl.sheet_names, key=key)
-
-
-def to_excel(positive=None, aggregate=None, recheck=None):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        if positive is not None:
-            positive.to_excel(writer, sheet_name="Positive_Checked", index=False)
-        if aggregate is not None:
-            aggregate.to_excel(writer, sheet_name="Aggregate_Checked", index=False)
-        if recheck is not None:
-            rows = recheck.get("custom_rows")
-            if rows:
-                wb = writer.book
-                ws = wb.create_sheet(recheck.get("sheet_title", "REACH_RECHECK")[:31])
-                for row in rows:
-                    ws.append([None if pd.isna(v) and not isinstance(v, str) else v for v in row])
-                for cell in ws[1]:
-                    cell.fill = PatternFill("solid", fgColor="146451")
                     cell.font = Font(color="FFFFFF", bold=True)
                 for cell in ws[2]:
                     cell.fill = PatternFill("solid", fgColor="DCECE8")
@@ -100,7 +29,7 @@ def count_comments(df):
 heading, photo = st.columns([3.2, 1], vertical_alignment="center")
 with heading:
     st.markdown('<div class="hero-title">Malaria SSR1.6 — Data Validation</div>', unsafe_allow_html=True)
-    st.markdown('<div class="hero-sub">Upload positive and aggregate malaria records, check data quality, calculate indicators, and export results.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-sub">Upload your trusted Python rules and malaria Excel records, run checks, and download results.</div>', unsafe_allow_html=True)
 with photo:
     # A local copy works offline; otherwise Streamlit loads the Wikimedia Commons photo.
     try:
@@ -116,9 +45,15 @@ if TEMPLATE_FILE.is_file():
                        file_name=TEMPLATE_FILE.name,
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-if not RULE_FILE.is_file():
-    st.error(f"Rule script missing. Place '{RULE_FILE.name}' beside this Streamlit app.")
+st.subheader("1. Upload malaria validation rules")
+st.caption("Security: Python files run on the app server. Only upload rule scripts you trust. Administrator access is required.")
+if not admin_authorized():
     st.stop()
+rule_upload = st.file_uploader("Upload malaria rules (.py)", type=["py"], key="rule_file")
+if rule_upload is not None:
+    st.caption(f"Selected rules: {rule_upload.name}")
+
+st.subheader("2. Upload Excel records")
 
 mode = st.radio("Run checks", ["Positive + Aggregate", "Positive only", "Aggregate only"],
                 horizontal=True, index=0)
@@ -137,13 +72,13 @@ with right:
                                   key="aggregate", disabled=not need_agg)
     agg_sheet = select_sheet(agg_upload, "aggregate_sheet") if need_agg else None
 
-can_run = (not need_pos or pos_upload is not None) and (not need_agg or agg_upload is not None)
+can_run = (rule_upload is not None and (not need_pos or pos_upload is not None) and (not need_agg or agg_upload is not None))
 run = st.button("Run malaria validation", type="primary", disabled=not can_run,
                 use_container_width=True)
 
 if run:
     try:
-        rules = load_rules(str(RULE_FILE), RULE_FILE.stat().st_mtime_ns)
+        rules = load_uploaded_rules(rule_upload.getvalue())
         positive_source = read_sheet(pos_upload, pos_sheet) if need_pos else None
         aggregate_source = read_sheet(agg_upload, agg_sheet) if need_agg else None
         with st.spinner("Checking records against SSR1.6 rules..."):
@@ -191,4 +126,3 @@ if "result" in st.session_state:
                     df = df[df["COMMENT"].fillna("").astype(str).str.strip().ne("")]
             st.dataframe(df, use_container_width=True, hide_index=True)
     if recheck is not None:
-        st.info("REACH_RECHECK includes Excel formulas. Open the downloaded workbook in Excel or LibreOffice to recalculate the comparison fields.")
